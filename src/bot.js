@@ -1,7 +1,6 @@
 const https = require("https");
 
 // ─── 設定 ───────────────────────────────────────────────
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 
 const KEYWORDS = ["AIデザイン", "AI UX", "AI UI", "生成AI デザイン", "AIデザイナー"];
@@ -159,50 +158,6 @@ function dedupeAndRank(articles) {
   return unique.sort((a, b) => b.score - a.score).slice(0, TOP_N);
 }
 
-// ─── Claude で要約 ──────────────────────────────────────
-async function summarize(article) {
-  const body = JSON.stringify({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1000,
-    messages: [
-      {
-        role: "user",
-        content: `以下の記事を日本語で140文字以内に要約してください。要約のみを返してください。余計な説明は不要です。
-
-タイトル: ${article.title}
-本文抜粋: ${article.body}`,
-      },
-    ],
-  });
-
-  const urlObj = new URL("https://api.anthropic.com/v1/messages");
-  const data = await new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "Content-Length": Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        let d = "";
-        res.on("data", (c) => (d += c));
-        res.on("end", () => resolve(JSON.parse(d)));
-      }
-    );
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
-
-  return data.content?.[0]?.text || article.title;
-}
-
 // ─── Slack 投稿 ──────────────────────────────────────────
 async function postToSlack(articles) {
   const now = new Date();
@@ -214,7 +169,6 @@ async function postToSlack(articles) {
   for (let i = 0; i < articles.length; i++) {
     const a = articles[i];
     lines.push(`${emojis[i]} ${a.title}`);
-    lines.push(a.summary);
     lines.push(a.url);
     if (i < articles.length - 1) lines.push("");
   }
@@ -240,11 +194,6 @@ async function main() {
   if (top.length === 0) {
     console.log("該当記事なし。投稿をスキップします。");
     return;
-  }
-
-  console.log("要約生成中...");
-  for (const article of top) {
-    article.summary = await summarize(article);
   }
 
   await postToSlack(top);
