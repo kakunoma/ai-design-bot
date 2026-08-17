@@ -2,6 +2,7 @@ const https = require("https");
 
 // ─── 設定 ───────────────────────────────────────────────
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
+const EXCERPT_LENGTH = 140;
 
 const KEYWORDS = ["AIデザイン", "AI UX", "AI UI", "生成AI デザイン", "AIデザイナー"];
 const TOP_N = 5;
@@ -158,6 +159,26 @@ function dedupeAndRank(articles) {
   return unique.sort((a, b) => b.score - a.score).slice(0, TOP_N);
 }
 
+// ─── 機械的な抜粋（AI要約の代わり） ───────────────────────
+function stripHtml(text) {
+  return text
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function excerpt(article) {
+  const clean = stripHtml(article.body || "");
+  const base = clean || article.title || "";
+  if (!base) return "（詳細はリンク先をご確認ください）";
+  if (base.length <= EXCERPT_LENGTH) return base;
+  return base.slice(0, EXCERPT_LENGTH - 1) + "…";
+}
+
 // ─── Slack 投稿 ──────────────────────────────────────────
 async function postToSlack(articles) {
   const now = new Date();
@@ -169,6 +190,7 @@ async function postToSlack(articles) {
   for (let i = 0; i < articles.length; i++) {
     const a = articles[i];
     lines.push(`${emojis[i]} ${a.title}`);
+    lines.push(a.summary);
     lines.push(a.url);
     if (i < articles.length - 1) lines.push("");
   }
@@ -194,6 +216,11 @@ async function main() {
   if (top.length === 0) {
     console.log("該当記事なし。投稿をスキップします。");
     return;
+  }
+
+  console.log("抜粋生成中...");
+  for (const article of top) {
+    article.summary = excerpt(article);
   }
 
   await postToSlack(top);

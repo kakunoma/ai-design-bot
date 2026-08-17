@@ -20,8 +20,9 @@ git push -u origin main
 
 | Secret名 | 値 |
 |---|---|
-| `ANTHROPIC_API_KEY` | AnthropicのAPIキー |
 | `SLACK_WEBHOOK_URL` | SlackのIncoming Webhook URL |
+
+※ 完全無料運用のため、AI要約は使わず機械的な抜粋方式にしています（APIキー不要）。
 
 ### 3. Slack Incoming Webhook の発行方法
 
@@ -46,7 +47,7 @@ GitHub ActionsのページからWorkflowを手動実行（`workflow_dispatch`）
 06/18のAI×デザイン注目記事
 
 1️⃣ 記事タイトル
-要約テキスト（140字以内・日本語）
+本文冒頭からの抜粋（140字以内）
 https://...
 
 2️⃣ ...
