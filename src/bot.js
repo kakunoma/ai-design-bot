@@ -2,7 +2,6 @@ const https = require("https");
 
 // ─── 設定 ───────────────────────────────────────────────
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
-const EXCERPT_LENGTH = 140;
 
 const KEYWORDS = ["AIデザイン", "AI UX", "AI UI", "生成AI デザイン", "AIデザイナー"];
 const TOP_N = 5;
@@ -115,30 +114,68 @@ async function fetchZenn() {
   return articles;
 }
 
-// ─── はてなブックマーク ──────────────────────────────────
+// ─── はてなブックマーク（RSS版：JSON検索APIは廃止済みのため） ─────
+function decodeXmlEntities(text) {
+  return text
+    .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"');
+}
+
+function fetchText(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, options, (res) => {
+      // 3xxリダイレクトを手動で追跡（JSON検索APIはHTMLへ、RSSはXMLのままリダイレクトされる）
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const redirected = new URL(res.headers.location, url).toString();
+        res.resume();
+        resolve(fetchText(redirected, options));
+        return;
+      }
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => resolve(data));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function fetchHatena() {
   const articles = [];
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
   for (const kw of KEYWORDS) {
     const query = encodeURIComponent(kw);
-    const url = `https://b.hatena.ne.jp/search/text?q=${query}&sort=recent&safe=on&target=entry&ie=UTF-8&output=json`;
+    const url = `https://b.hatena.ne.jp/search/text?q=${query}&sort=recent&safe=on&target=text&mode=rss`;
     try {
-      const data = await fetchJson(url, {
+      const xml = await fetchText(url, {
         method: "GET",
         headers: { "User-Agent": "ai-design-bot/1.0" },
       });
-      const items = data?.bookmarks || data?.items || [];
-      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      for (const item of items) {
-        const date = new Date(item.created || item.bookmarked_data?.timestamp || 0);
-        if (date >= cutoff) {
-          articles.push({
-            title: item.title || item.entry?.title || "",
-            url: item.link || item.entry?.url || "",
-            score: item.count || item.entry?.count || 0,
-            source: "はてブ",
-            body: item.description || item.entry?.description || "",
-          });
-        }
+
+      const itemBlocks = xml.split(/<item /).slice(1);
+      for (const block of itemBlocks) {
+        const linkMatch = block.match(/<link>([\s\S]*?)<\/link>/);
+        const titleMatch = block.match(/<title>([\s\S]*?)<\/title>/);
+        const dateMatch = block.match(/<dc:date>([\s\S]*?)<\/dc:date>/);
+        const countMatch = block.match(/<hatena:bookmarkcount>(\d+)<\/hatena:bookmarkcount>/);
+
+        if (!linkMatch || !titleMatch || !dateMatch) continue;
+
+        const pubDate = new Date(dateMatch[1]);
+        if (pubDate < cutoff) continue;
+
+        articles.push({
+          title: decodeXmlEntities(titleMatch[1]),
+          url: decodeXmlEntities(linkMatch[1]),
+          score: countMatch ? parseInt(countMatch[1], 10) : 0,
+          source: "はてブ",
+          body: "",
+        });
       }
     } catch (e) {
       console.error(`Hatena fetch error (${kw}):`, e.message);
@@ -159,26 +196,6 @@ function dedupeAndRank(articles) {
   return unique.sort((a, b) => b.score - a.score).slice(0, TOP_N);
 }
 
-// ─── 機械的な抜粋（AI要約の代わり） ───────────────────────
-function stripHtml(text) {
-  return text
-    .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function excerpt(article) {
-  const clean = stripHtml(article.body || "");
-  const base = clean || article.title || "";
-  if (!base) return "（詳細はリンク先をご確認ください）";
-  if (base.length <= EXCERPT_LENGTH) return base;
-  return base.slice(0, EXCERPT_LENGTH - 1) + "…";
-}
-
 // ─── Slack 投稿 ──────────────────────────────────────────
 async function postToSlack(articles) {
   const now = new Date();
@@ -190,12 +207,15 @@ async function postToSlack(articles) {
   for (let i = 0; i < articles.length; i++) {
     const a = articles[i];
     lines.push(`${emojis[i]} ${a.title}`);
-    lines.push(a.summary);
     lines.push(a.url);
     if (i < articles.length - 1) lines.push("");
   }
 
-  await postJson(SLACK_WEBHOOK_URL, { text: lines.join("\n") });
+  await postJson(SLACK_WEBHOOK_URL, {
+    text: lines.join("\n"),
+    unfurl_links: false,
+    unfurl_media: false,
+  });
   console.log("Slack投稿完了");
 }
 
@@ -216,11 +236,6 @@ async function main() {
   if (top.length === 0) {
     console.log("該当記事なし。投稿をスキップします。");
     return;
-  }
-
-  console.log("抜粋生成中...");
-  for (const article of top) {
-    article.summary = excerpt(article);
   }
 
   await postToSlack(top);
