@@ -115,6 +115,14 @@ async function fetchZenn() {
 }
 
 // ─── はてなブックマーク（RSS版：JSON検索APIは廃止済みのため） ─────
+// ページ全体を対象にした検索のため、サイドバー等の無関係な文言も拾ってしまう。
+// タイトルに「AI」＋「デザイン系ワード」が両方含まれる記事のみ採用してノイズを除去する。
+function isRelevantTitle(title) {
+  const hasAI = /AI|ai|人工知能|生成AI/i.test(title);
+  const hasDesignWord = /デザイ|UX|UI|ux|ui/i.test(title); // 「デザイ」でデザイン/デザイナー等を包括
+  return hasAI && hasDesignWord;
+}
+
 function decodeXmlEntities(text) {
   return text
     .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
@@ -169,8 +177,11 @@ async function fetchHatena() {
         const pubDate = new Date(dateMatch[1]);
         if (pubDate < cutoff) continue;
 
+        const title = decodeXmlEntities(titleMatch[1]);
+        if (!isRelevantTitle(title)) continue; // タイトル無関係なら除外（ノイズ対策）
+
         articles.push({
-          title: decodeXmlEntities(titleMatch[1]),
+          title,
           url: decodeXmlEntities(linkMatch[1]),
           score: countMatch ? parseInt(countMatch[1], 10) : 0,
           source: "はてブ",
