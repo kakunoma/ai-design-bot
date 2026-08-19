@@ -195,6 +195,103 @@ async function fetchHatena() {
   return articles;
 }
 
+// ─── デザイン専門メディア（Goodpatch Blog / Spectrum Tokyo） ─────
+// これらはデザイン特化メディアのため、タイトルの「デザイン系ワード」チェックは不要。
+// 「AI」関連ワードが含まれる記事のみに絞る。
+function hasAIWord(title) {
+  return /AI|ai|人工知能|生成AI/i.test(title);
+}
+
+async function fetchWordPressRss(feedUrl, sourceName, cutoffDays = 1) {
+  const articles = [];
+  const cutoff = new Date(Date.now() - cutoffDays * 24 * 60 * 60 * 1000);
+
+  try {
+    const xml = await fetchText(feedUrl, {
+      method: "GET",
+      headers: { "User-Agent": "ai-design-bot/1.0" },
+    });
+
+    const itemBlocks = xml.split(/<item>/).slice(1);
+    for (const block of itemBlocks) {
+      const titleMatch = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/);
+      const linkMatch = block.match(/<link>([\s\S]*?)<\/link>/);
+      const dateMatch = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+
+      if (!titleMatch || !linkMatch || !dateMatch) continue;
+
+      const pubDate = new Date(dateMatch[1]);
+      if (pubDate < cutoff) continue;
+
+      const title = decodeXmlEntities(titleMatch[1]);
+      if (!hasAIWord(title)) continue; // デザイン特化メディアなのでAI関連のみ抽出
+
+      articles.push({
+        title,
+        url: decodeXmlEntities(linkMatch[1]),
+        score: 20, // 参考にする「いいね数」等がないため、デザイン専門メディア由来として高めの固定スコアを付与
+        source: sourceName,
+        body: "",
+      });
+    }
+  } catch (e) {
+    console.error(`${sourceName} fetch error:`, e.message);
+  }
+  return articles;
+}
+
+function fetchGoodpatchBlog() {
+  // デザイン専門ブログは更新頻度が低いため24hでは0件になりがちだが、
+  // 同じ記事が出続ける期間を最大2日に抑えるため7日ではなく2日を採用
+  return fetchWordPressRss("https://goodpatch.com/blog/feed", "Goodpatch Blog", 2);
+}
+
+function fetchSpectrumTokyo() {
+  return fetchWordPressRss("https://spectrumtokyo.com/jp/feed", "Spectrum Tokyo", 2);
+}
+
+// ─── note（ハッシュタグRSS） ────────────────────────────
+// note公式APIはないが、ハッシュタグ単位のRSSは生きている（新着順・人気順ではない）。
+// タイトルにAI×デザイン系ワードが両方含まれる記事のみ採用してノイズを除去する。
+async function fetchNote() {
+  const articles = [];
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const url = "https://note.com/hashtag/AI%E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3/rss";
+
+  try {
+    const xml = await fetchText(url, {
+      method: "GET",
+      headers: { "User-Agent": "ai-design-bot/1.0" },
+    });
+
+    const itemBlocks = xml.split(/<item>/).slice(1);
+    for (const block of itemBlocks) {
+      const titleMatch = block.match(/<title>([\s\S]*?)<\/title>/);
+      const linkMatch = block.match(/<link>([\s\S]*?)<\/link>/);
+      const dateMatch = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+
+      if (!titleMatch || !linkMatch || !dateMatch) continue;
+
+      const pubDate = new Date(dateMatch[1]);
+      if (pubDate < cutoff) continue;
+
+      const title = decodeXmlEntities(titleMatch[1]);
+      if (!isRelevantTitle(title)) continue; // AI×デザイン系ワードの両方が必須
+
+      articles.push({
+        title,
+        url: decodeXmlEntities(linkMatch[1]),
+        score: 5, // ブックマーク数等の指標がないため固定スコア
+        source: "note",
+        body: "",
+      });
+    }
+  } catch (e) {
+    console.error("note fetch error:", e.message);
+  }
+  return articles;
+}
+
 // ─── 重複除去 & ランキング ───────────────────────────────
 function dedupeAndRank(articles) {
   const seen = new Set();
@@ -234,15 +331,20 @@ async function postToSlack(articles) {
 async function main() {
   console.log("記事収集開始...");
 
-  const [qiita, zenn, hatena] = await Promise.all([
+  const [qiita, zenn, hatena, goodpatch, spectrum, note] = await Promise.all([
     fetchQiita(),
     fetchZenn(),
     fetchHatena(),
+    fetchGoodpatchBlog(),
+    fetchSpectrumTokyo(),
+    fetchNote(),
   ]);
 
-  console.log(`取得件数 Qiita:${qiita.length} Zenn:${zenn.length} はてブ:${hatena.length}`);
+  console.log(
+    `取得件数 Qiita:${qiita.length} Zenn:${zenn.length} はてブ:${hatena.length} Goodpatch:${goodpatch.length} SpectrumTokyo:${spectrum.length} note:${note.length}`
+  );
 
-  const top = dedupeAndRank([...qiita, ...zenn, ...hatena]);
+  const top = dedupeAndRank([...qiita, ...zenn, ...hatena, ...goodpatch, ...spectrum, ...note]);
 
   if (top.length === 0) {
     console.log("該当記事なし。投稿をスキップします。");
